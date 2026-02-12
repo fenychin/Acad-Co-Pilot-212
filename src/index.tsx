@@ -45,6 +45,12 @@ function generateSessionId(): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
+function generateVerificationCode(): string {
+  const array = crypto.getRandomValues(new Uint8Array(3))
+  const num = ((array[0] << 16) | (array[1] << 8) | array[2]) % 900000 + 100000
+  return num.toString()
+}
+
 // ============================================================
 // Auth Middleware
 // ============================================================
@@ -86,7 +92,127 @@ const logoSvg = `<svg width="32" height="32" viewBox="0 0 28 28" fill="none">
 </svg>`
 
 // ============================================================
-// API: Sign Up
+// API: Send Verification Code
+// ============================================================
+app.post('/api/auth/send-code', async (c) => {
+  try {
+    const body = await c.req.json()
+    const { email } = body
+
+    if (!email) {
+      return c.json({ error: '请输入邮箱地址' }, 400)
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) {
+      return c.json({ error: '请输入有效的邮箱地址' }, 400)
+    }
+
+    const normalizedEmail = email.toLowerCase().trim()
+    const db = c.env.DB
+
+    // Check if email is already registered
+    const existing = await db.prepare('SELECT id FROM users WHERE email = ?').bind(normalizedEmail).first()
+    if (existing) {
+      return c.json({ error: '该邮箱已被注册' }, 409)
+    }
+
+    // Rate limit: check recent codes sent to this email (max 1 per 60 seconds)
+    const recentCode = await db.prepare(
+      `SELECT id FROM email_verifications
+       WHERE email = ? AND created_at > datetime('now', '-60 seconds')
+       ORDER BY created_at DESC LIMIT 1`
+    ).bind(normalizedEmail).first()
+    if (recentCode) {
+      return c.json({ error: '发送过于频繁，请60秒后再试' }, 429)
+    }
+
+    // Clean up old codes for this email
+    await db.prepare(
+      `DELETE FROM email_verifications WHERE email = ?`
+    ).bind(normalizedEmail).run()
+
+    // Generate 6-digit code
+    const code = generateVerificationCode()
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 min
+
+    await db.prepare(
+      'INSERT INTO email_verifications (email, code, expires_at) VALUES (?, ?, ?)'
+    ).bind(normalizedEmail, code, expiresAt).run()
+
+    // In production, send the code via email service (Resend/SendGrid).
+    // For development/demo, return a masked hint.
+    // The actual code is stored in DB — in a real app, it would be emailed.
+    console.log(`[DEV] Verification code for ${normalizedEmail}: ${code}`)
+
+    return c.json({
+      success: true,
+      message: '验证码已发送至您的邮箱',
+      // DEV ONLY: expose code for testing; remove in production
+      _dev_code: code
+    })
+  } catch (e: any) {
+    return c.json({ error: '发送验证码失败，请稍后重试' }, 500)
+  }
+})
+
+// ============================================================
+// API: Verify Code
+// ============================================================
+app.post('/api/auth/verify-code', async (c) => {
+  try {
+    const body = await c.req.json()
+    const { email, code } = body
+
+    if (!email || !code) {
+      return c.json({ error: '请输入邮箱和验证码' }, 400)
+    }
+
+    const normalizedEmail = email.toLowerCase().trim()
+    const db = c.env.DB
+
+    const record = await db.prepare(
+      `SELECT id, code, attempts, expires_at FROM email_verifications
+       WHERE email = ? AND verified = 0
+       ORDER BY created_at DESC LIMIT 1`
+    ).bind(normalizedEmail).first<any>()
+
+    if (!record) {
+      return c.json({ error: '请先发送验证码' }, 400)
+    }
+
+    // Check expiry
+    if (new Date(record.expires_at) < new Date()) {
+      return c.json({ error: '验证码已过期，请重新发送' }, 410)
+    }
+
+    // Check attempts (max 5)
+    if (record.attempts >= 5) {
+      return c.json({ error: '验证码错误次数过多，请重新发送' }, 429)
+    }
+
+    // Increment attempts
+    await db.prepare(
+      'UPDATE email_verifications SET attempts = attempts + 1 WHERE id = ?'
+    ).bind(record.id).run()
+
+    if (record.code !== code.trim()) {
+      return c.json({ error: '验证码错误，请重新输入' }, 400)
+    }
+
+    // Mark as verified
+    await db.prepare(
+      'UPDATE email_verifications SET verified = 1 WHERE id = ?'
+    ).bind(record.id).run()
+
+    return c.json({ success: true, message: '邮箱验证成功' })
+  } catch (e: any) {
+    return c.json({ error: '验证失败，请稍后重试' }, 500)
+  }
+})
+
+// ============================================================
+// API: Sign Up (requires verified email)
 // ============================================================
 app.post('/api/auth/signup', async (c) => {
   try {
@@ -106,8 +232,20 @@ app.post('/api/auth/signup', async (c) => {
       return c.json({ error: '请输入有效的邮箱地址' }, 400)
     }
 
+    const normalizedEmail = email.toLowerCase().trim()
     const db = c.env.DB
-    const existing = await db.prepare('SELECT id FROM users WHERE email = ?').bind(email.toLowerCase().trim()).first()
+
+    // Check that email has been verified
+    const verified = await db.prepare(
+      `SELECT id FROM email_verifications
+       WHERE email = ? AND verified = 1 AND expires_at > datetime('now')
+       ORDER BY created_at DESC LIMIT 1`
+    ).bind(normalizedEmail).first()
+    if (!verified) {
+      return c.json({ error: '请先完成邮箱验证' }, 403)
+    }
+
+    const existing = await db.prepare('SELECT id FROM users WHERE email = ?').bind(normalizedEmail).first()
     if (existing) {
       return c.json({ error: '该邮箱已被注册' }, 409)
     }
@@ -118,12 +256,15 @@ app.post('/api/auth/signup', async (c) => {
     const result = await db.prepare(
       'INSERT INTO users (email, name, password_hash, role, institution) VALUES (?, ?, ?, ?, ?)'
     ).bind(
-      email.toLowerCase().trim(),
+      normalizedEmail,
       name.trim(),
       passwordHash,
       userRole,
       (institution || '').trim()
     ).run()
+
+    // Clean up verification records
+    await db.prepare('DELETE FROM email_verifications WHERE email = ?').bind(normalizedEmail).run()
 
     const userId = result.meta.last_row_id
     const sessionId = generateSessionId()
@@ -143,7 +284,7 @@ app.post('/api/auth/signup', async (c) => {
 
     return c.json({
       success: true,
-      user: { id: userId, email: email.toLowerCase().trim(), name: name.trim(), role: userRole }
+      user: { id: userId, email: normalizedEmail, name: name.trim(), role: userRole }
     })
   } catch (e: any) {
     return c.json({ error: '注册失败，请稍后重试' }, 500)
@@ -249,60 +390,115 @@ app.get('/signup', (c) => {
     </a>
 
     <div class="auth-card">
-      <div class="auth-header">
-        <h1>创建账户</h1>
-        <p>加入 Acad Co-Pilot，开启智能学术指导之旅</p>
+      <!-- Step Indicator -->
+      <div class="step-indicator">
+        <div class="step-item active" id="step-ind-1">
+          <div class="step-num">1</div>
+          <span>验证邮箱</span>
+        </div>
+        <div class="step-line" id="step-line"></div>
+        <div class="step-item" id="step-ind-2">
+          <div class="step-num">2</div>
+          <span>完善信息</span>
+        </div>
       </div>
 
-      <form id="signup-form" class="auth-form" autocomplete="off">
-        <div class="form-group">
-          <label for="name">姓名 <span class="required">*</span></label>
-          <input type="text" id="name" name="name" placeholder="请输入您的姓名" required autocomplete="name">
+      <!-- STEP 1: Email Verification -->
+      <div id="step-1" class="signup-step">
+        <div class="auth-header">
+          <h1>验证您的邮箱</h1>
+          <p>我们将发送6位验证码到您的邮箱</p>
         </div>
 
-        <div class="form-group">
-          <label for="email">邮箱地址 <span class="required">*</span></label>
-          <input type="email" id="email" name="email" placeholder="name@university.edu" required autocomplete="email">
+        <form id="email-verify-form" class="auth-form" autocomplete="off">
+          <div class="form-group">
+            <label for="email">邮箱地址 <span class="required">*</span></label>
+            <input type="email" id="email" name="email" placeholder="name@university.edu" required autocomplete="email">
+          </div>
+
+          <div class="form-group" id="code-group" style="display:none">
+            <label for="vcode">验证码 <span class="required">*</span></label>
+            <div class="code-input-row">
+              <input type="text" id="vcode" name="vcode" placeholder="6位数字验证码" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code">
+              <button type="button" class="btn-send-code" id="btn-send-code">
+                <span class="send-text">发送验证码</span>
+                <span class="send-countdown" style="display:none"></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-error" id="form-error"></div>
+
+          <button type="button" class="btn-submit" id="btn-send-init">
+            <span class="btn-text">发送验证码</span>
+            <span class="btn-loading" style="display:none">
+              <svg class="spinner" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4 31.4" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+              发送中...
+            </span>
+          </button>
+
+          <button type="submit" class="btn-submit" id="btn-verify" style="display:none">
+            <span class="btn-text">验证并继续</span>
+            <span class="btn-loading" style="display:none">
+              <svg class="spinner" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4 31.4" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+              验证中...
+            </span>
+          </button>
+        </form>
+      </div>
+
+      <!-- STEP 2: Complete Registration -->
+      <div id="step-2" class="signup-step" style="display:none">
+        <div class="auth-header">
+          <h1>创建账户</h1>
+          <p>邮箱 <strong id="verified-email"></strong> 已验证</p>
         </div>
 
-        <div class="form-group">
-          <label for="password">密码 <span class="required">*</span></label>
-          <div class="input-password-wrap">
-            <input type="password" id="password" name="password" placeholder="至少6位字符" required minlength="6" autocomplete="new-password">
-            <button type="button" class="toggle-pw" data-target="password" aria-label="显示密码">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-            </button>
+        <form id="signup-form" class="auth-form" autocomplete="off">
+          <div class="form-group">
+            <label for="name">姓名 <span class="required">*</span></label>
+            <input type="text" id="name" name="name" placeholder="请输入您的姓名" required autocomplete="name">
           </div>
-          <div class="pw-strength" id="pw-strength">
-            <div class="pw-bar"><div class="pw-fill" id="pw-fill"></div></div>
-            <span id="pw-label"></span>
-          </div>
-        </div>
 
-        <div class="form-row">
-          <div class="form-group half">
-            <label for="role">身份</label>
-            <select id="role" name="role">
-              <option value="student">学生</option>
-              <option value="tutor">导师</option>
-            </select>
+          <div class="form-group">
+            <label for="password">密码 <span class="required">*</span></label>
+            <div class="input-password-wrap">
+              <input type="password" id="password" name="password" placeholder="至少6位字符" required minlength="6" autocomplete="new-password">
+              <button type="button" class="toggle-pw" data-target="password" aria-label="显示密码">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+            <div class="pw-strength" id="pw-strength">
+              <div class="pw-bar"><div class="pw-fill" id="pw-fill"></div></div>
+              <span id="pw-label"></span>
+            </div>
           </div>
-          <div class="form-group half">
-            <label for="institution">所属机构</label>
-            <input type="text" id="institution" name="institution" placeholder="大学/研究所">
+
+          <div class="form-row">
+            <div class="form-group half">
+              <label for="role">身份</label>
+              <select id="role" name="role">
+                <option value="student">学生</option>
+                <option value="tutor">导师</option>
+              </select>
+            </div>
+            <div class="form-group half">
+              <label for="institution">所属机构</label>
+              <input type="text" id="institution" name="institution" placeholder="大学/研究所">
+            </div>
           </div>
-        </div>
 
-        <div class="form-error" id="form-error"></div>
+          <div class="form-error" id="form-error-2"></div>
 
-        <button type="submit" class="btn-submit" id="btn-submit">
-          <span class="btn-text">创建账户</span>
-          <span class="btn-loading" style="display:none">
-            <svg class="spinner" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4 31.4" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
-            注册中...
-          </span>
-        </button>
-      </form>
+          <button type="submit" class="btn-submit" id="btn-submit">
+            <span class="btn-text">创建账户</span>
+            <span class="btn-loading" style="display:none">
+              <svg class="spinner" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4 31.4" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+              注册中...
+            </span>
+          </button>
+        </form>
+      </div>
 
       <div class="auth-footer">
         <span>已有账户？</span>
