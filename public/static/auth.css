@@ -68,6 +68,144 @@
   height: 26px;
 }
 
+/* Step Indicator */
+.step-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  margin-bottom: 28px;
+}
+
+.step-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.4;
+  transition: opacity 0.3s;
+}
+
+.step-item.active {
+  opacity: 1;
+}
+
+.step-item.done {
+  opacity: 0.65;
+}
+
+.step-num {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1.5px solid var(--border-hover);
+  color: var(--text-secondary);
+  transition: all 0.3s;
+}
+
+.step-item.active .step-num {
+  background: var(--gradient-primary);
+  border-color: transparent;
+  color: white;
+}
+
+.step-item.done .step-num {
+  background: var(--accent-green);
+  border-color: transparent;
+  color: white;
+}
+
+.step-item span {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text-secondary);
+}
+
+.step-item.active span {
+  color: var(--text-primary);
+}
+
+.step-line {
+  width: 40px;
+  height: 2px;
+  background: var(--border-color);
+  margin: 0 12px;
+  border-radius: 1px;
+  transition: background 0.4s;
+}
+
+.step-line.done {
+  background: var(--accent-green);
+}
+
+/* Signup Step Transitions */
+.signup-step {
+  animation: stepFadeIn 0.35s ease;
+}
+
+@keyframes stepFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Code Input Row */
+.code-input-row {
+  display: flex;
+  gap: 10px;
+}
+
+.code-input-row input {
+  flex: 1;
+  font-size: 18px !important;
+  font-weight: 600;
+  letter-spacing: 0.35em;
+  text-align: center;
+}
+
+.btn-send-code {
+  flex-shrink: 0;
+  padding: 0 16px;
+  min-width: 100px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-main);
+  color: var(--accent-purple);
+  background: rgba(108, 92, 231, 0.08);
+  border: 1px solid rgba(108, 92, 231, 0.2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn-send-code:hover:not(:disabled) {
+  background: rgba(108, 92, 231, 0.15);
+  border-color: rgba(108, 92, 231, 0.35);
+}
+
+.btn-send-code:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  color: var(--text-muted);
+}
+
+.send-countdown {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Verified email badge in step 2 */
+#step-2 .auth-header strong {
+  color: var(--accent-teal);
+  background: rgba(78, 205, 196, 0.08);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
 /* Auth Card */
 .auth-card {
   width: 100%;
@@ -314,6 +452,10 @@
 .auth-form select option {
   background: #1a1a2e;
   color: var(--text-primary);
+}
+
+.auth-form input[type="text"][readonly] {
+  cursor: not-allowed;
 }
 
 .auth-form input[readonly] {

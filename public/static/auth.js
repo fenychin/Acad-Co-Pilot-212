@@ -89,125 +89,126 @@
     }
   }
 
-  // ========== SIGN-UP: Two-Step Flow ==========
-  var verifiedEmail = ''  // track verified email across steps
+  // ========== SIGNUP: Two-Step Flow ==========
+  var verifiedEmail = ''
   var countdownTimer = null
 
-  // Step 1: Send code initial button
+  // Step 1: Send code
   var btnSendInit = document.getElementById('btn-send-init')
   var btnSendCode = document.getElementById('btn-send-code')
-  var btnVerify = document.getElementById('btn-verify')
   var codeGroup = document.getElementById('code-group')
-  var emailInput = document.getElementById('email')
+  var btnVerify = document.getElementById('btn-verify')
 
-  function startCountdown(btnEl) {
+  function startCountdown(btn) {
     var seconds = 60
-    var textEl = btnEl.querySelector('.send-text')
-    var countdownEl = btnEl.querySelector('.send-countdown')
-    if (!textEl || !countdownEl) return
+    var textEl = btn.querySelector('.send-text')
+    var cdEl = btn.querySelector('.send-countdown')
+    if (!textEl || !cdEl) return
 
-    btnEl.disabled = true
+    btn.disabled = true
     textEl.style.display = 'none'
-    countdownEl.style.display = ''
-    countdownEl.textContent = seconds + 's'
+    cdEl.style.display = ''
+    cdEl.textContent = seconds + 's'
 
     countdownTimer = setInterval(function () {
       seconds--
-      countdownEl.textContent = seconds + 's'
+      cdEl.textContent = seconds + 's'
       if (seconds <= 0) {
         clearInterval(countdownTimer)
         countdownTimer = null
-        btnEl.disabled = false
+        btn.disabled = false
         textEl.style.display = ''
-        countdownEl.style.display = 'none'
         textEl.textContent = '重新发送'
+        cdEl.style.display = 'none'
       }
     }, 1000)
   }
 
-  async function sendCode(email, loadingBtn) {
+  async function sendCode(emailValue, triggerBtn) {
     hideError('form-error')
-
-    if (!email) { showError('form-error', '请输入邮箱地址'); return false }
     var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(email)) { showError('form-error', '请输入有效的邮箱地址'); return false }
+    if (!emailValue) { showError('form-error', '请输入邮箱地址'); return false }
+    if (!emailRegex.test(emailValue)) { showError('form-error', '请输入有效的邮箱地址'); return false }
 
-    if (loadingBtn) setBtnLoading(loadingBtn, true)
+    if (triggerBtn) setBtnLoading(triggerBtn, true)
 
     try {
       var res = await fetch('/api/auth/send-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email })
+        body: JSON.stringify({ email: emailValue })
       })
       var data = await res.json()
 
       if (!res.ok) {
-        showError('form-error', data.error || '发送失败')
-        if (loadingBtn) setBtnLoading(loadingBtn, false)
+        showError('form-error', data.error || '发送验证码失败')
+        if (triggerBtn) setBtnLoading(triggerBtn, false)
         return false
       }
 
-      // DEV: show the code in a subtle way for testing
+      // Dev hint: show code in console for testing
       if (data._dev_code) {
-        console.log('[DEV] Verification code:', data._dev_code)
-        // Auto-fill for dev convenience
-        var vcodeInput = document.getElementById('vcode')
-        if (vcodeInput) vcodeInput.value = data._dev_code
+        console.log('%c[DEV] 验证码: ' + data._dev_code, 'color: #4ECDC4; font-size: 16px; font-weight: bold;')
       }
 
       return true
     } catch (err) {
-      showError('form-error', '网络错误，请检查连接')
-      if (loadingBtn) setBtnLoading(loadingBtn, false)
+      showError('form-error', '网络错误，请检查网络连接')
+      if (triggerBtn) setBtnLoading(triggerBtn, false)
       return false
     }
   }
 
-  // Initial "发送验证码" button (before code input is visible)
+  // Initial "发送验证码" button
   if (btnSendInit) {
     btnSendInit.addEventListener('click', async function () {
-      var email = emailInput ? emailInput.value.trim() : ''
-      var success = await sendCode(email, btnSendInit)
+      var emailInput = document.getElementById('email')
+      var emailValue = emailInput ? emailInput.value.trim() : ''
+
+      var success = await sendCode(emailValue, btnSendInit)
       if (success) {
-        // Transition: hide init button, show code input + verify + resend
+        // Show code input + hide initial button + show verify button
         btnSendInit.style.display = 'none'
-        if (codeGroup) codeGroup.style.display = ''
-        if (btnVerify) btnVerify.style.display = ''
-        if (emailInput) emailInput.readOnly = true
+        codeGroup.style.display = ''
+        btnVerify.style.display = ''
+        emailInput.readOnly = true
+        emailInput.style.opacity = '0.7'
         // Start countdown on the inline resend button
-        if (btnSendCode) startCountdown(btnSendCode)
+        startCountdown(btnSendCode)
         // Focus code input
         var vcodeInput = document.getElementById('vcode')
         if (vcodeInput) vcodeInput.focus()
       }
-      setBtnLoading(btnSendInit, false)
     })
   }
 
-  // Resend button (inline, after initial send)
+  // Inline "重新发送" button
   if (btnSendCode) {
     btnSendCode.addEventListener('click', async function () {
-      var email = emailInput ? emailInput.value.trim() : ''
-      var success = await sendCode(email, null)
+      var emailInput = document.getElementById('email')
+      var emailValue = emailInput ? emailInput.value.trim() : ''
+      var success = await sendCode(emailValue, null)
       if (success) {
         startCountdown(btnSendCode)
+        hideError('form-error')
       }
     })
   }
 
-  // Verify code form
+  // Verify code + go to step 2
   var emailVerifyForm = document.getElementById('email-verify-form')
   if (emailVerifyForm) {
     emailVerifyForm.addEventListener('submit', async function (e) {
       e.preventDefault()
       hideError('form-error')
 
-      var email = emailInput ? emailInput.value.trim() : ''
-      var code = document.getElementById('vcode') ? document.getElementById('vcode').value.trim() : ''
+      var emailInput = document.getElementById('email')
+      var vcodeInput = document.getElementById('vcode')
+      var emailValue = emailInput ? emailInput.value.trim() : ''
+      var codeValue = vcodeInput ? vcodeInput.value.trim() : ''
 
-      if (!code || code.length !== 6) {
-        showError('form-error', '请输入6位验证码')
+      if (!codeValue || codeValue.length !== 6) {
+        showError('form-error', '请输入6位数字验证码')
         return
       }
 
@@ -217,7 +218,7 @@
         var res = await fetch('/api/auth/verify-code', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email, code: code })
+          body: JSON.stringify({ email: emailValue, code: codeValue })
         })
         var data = await res.json()
 
@@ -227,8 +228,8 @@
           return
         }
 
-        // Success: go to step 2
-        verifiedEmail = email
+        // Success — go to step 2
+        verifiedEmail = emailValue
         document.getElementById('step-1').style.display = 'none'
         document.getElementById('step-2').style.display = ''
 
@@ -240,13 +241,9 @@
 
         // Show verified email
         var verifiedEmailEl = document.getElementById('verified-email')
-        if (verifiedEmailEl) verifiedEmailEl.textContent = email
+        if (verifiedEmailEl) verifiedEmailEl.textContent = verifiedEmail
 
-        // Focus name input
-        var nameInput = document.getElementById('name')
-        if (nameInput) nameInput.focus()
-
-        // Re-bind password toggle for step 2 elements
+        // Re-bind toggle-pw for step 2
         document.querySelectorAll('#step-2 .toggle-pw').forEach(function (btn) {
           btn.addEventListener('click', function () {
             var targetId = btn.getAttribute('data-target')
@@ -259,8 +256,12 @@
               : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
           })
         })
+
+        // Focus name input
+        var nameInput = document.getElementById('name')
+        if (nameInput) nameInput.focus()
       } catch (err) {
-        showError('form-error', '网络错误，请检查连接')
+        showError('form-error', '网络错误，请检查网络连接')
         setBtnLoading(btnVerify, false)
       }
     })
@@ -305,9 +306,10 @@
           return
         }
 
+        // Success — redirect to dashboard
         window.location.href = '/dashboard'
       } catch (err) {
-        showError('form-error-2', '网络错误，请检查连接')
+        showError('form-error-2', '网络错误，请检查网络连接')
         setBtnLoading(btn, false)
       }
     })
@@ -346,7 +348,7 @@
 
         window.location.href = '/dashboard'
       } catch (err) {
-        showError('form-error', '网络错误，请检查连接')
+        showError('form-error', '网络错误，请检查网络连接')
         setBtnLoading(btn, false)
       }
     })
@@ -361,13 +363,17 @@
       e.stopPropagation()
       dropdown.classList.toggle('open')
     })
+
     document.addEventListener('click', function (e) {
       if (!dropdown.contains(e.target) && e.target !== avatarBtn) {
         dropdown.classList.remove('open')
       }
     })
+
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') dropdown.classList.remove('open')
+      if (e.key === 'Escape') {
+        dropdown.classList.remove('open')
+      }
     })
   }
 
@@ -375,7 +381,9 @@
   var logoutBtn = document.getElementById('btn-logout')
   if (logoutBtn) {
     logoutBtn.addEventListener('click', async function () {
-      try { await fetch('/api/auth/logout', { method: 'POST' }) } catch (e) {}
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' })
+      } catch (e) {}
       window.location.href = '/login'
     })
   }
@@ -391,4 +399,12 @@
       if (group) group.classList.remove('focused')
     })
   })
+
+  // ========== Verification code input: auto-format digits only ==========
+  var vcodeInput = document.getElementById('vcode')
+  if (vcodeInput) {
+    vcodeInput.addEventListener('input', function () {
+      vcodeInput.value = vcodeInput.value.replace(/[^0-9]/g, '').slice(0, 6)
+    })
+  }
 })()
