@@ -146,9 +146,21 @@
         return false
       }
 
-      // Dev hint: show code in console for testing
+      // Dev hint: show code in console and on page for testing
       if (data._dev_code) {
         console.log('%c[DEV] 验证码: ' + data._dev_code, 'color: #4ECDC4; font-size: 16px; font-weight: bold;')
+        
+        // Show dev code hint on page
+        var devHint = document.getElementById('dev-code-hint')
+        if (!devHint) {
+          devHint = document.createElement('div')
+          devHint.id = 'dev-code-hint'
+          devHint.className = 'dev-code-hint'
+          var form = document.getElementById('email-verify-form')
+          if (form) form.insertBefore(devHint, form.querySelector('.form-error'))
+        }
+        devHint.innerHTML = '<strong>📝 开发模式 - 验证码: ' + data._dev_code + '</strong><br><small>（生产环境将通过邮件发送）</small>'
+        devHint.style.display = 'block'
       }
 
       return true
